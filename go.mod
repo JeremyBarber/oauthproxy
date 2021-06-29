@@ -1,4 +1,4 @@
-module github.com/nehemming/oauthproxy
+module oauthproxy
 
 go 1.16
 

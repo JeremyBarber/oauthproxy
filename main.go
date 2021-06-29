@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	"github.com/nehemming/oauthproxy/internal/cmd"
+		
+	"oauthproxy/internal/cmd"
 )
 
 func main() {

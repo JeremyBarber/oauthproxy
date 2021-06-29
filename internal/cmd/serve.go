@@ -7,8 +7,9 @@ package cmd
 import (
 	"fmt"
 	"time"
+	
+	"oauthproxy/internal/proxy"
 
-	"github.com/nehemming/oauthproxy/internal/proxy"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
