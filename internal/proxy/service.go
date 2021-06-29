@@ -175,7 +175,7 @@ func (rt *runtime) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		// Found here, reply without bothering downstream service
-		rt.logInfo("returning cached token for %s", tr.path)
+		rt.logInfo("returning cached token for '%s' (%s) at '%s'", tr.username, tr.clientID, tr.path)
 		rt.reply(w, entry)
 	}	
 }
@@ -240,7 +240,7 @@ func (rt *runtime) requestFromDownstream(tr tokenRequest, w http.ResponseWriter)
 		return
 	}
 
-	rt.logInfo("passing on downstream request for %s", tr.path)
+	rt.logInfo("passing on downstream request for '%s' (%s) at '%s'", tr.username, tr.clientID, tr.path)
 
 	// Send the request to the downs stream queue
 	// As HTTP Handlers need to wait for competition before exiting, so
