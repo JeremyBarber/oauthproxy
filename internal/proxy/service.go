@@ -136,6 +136,50 @@ func newRuntime(ctx context.Context, settings Settings) *runtime {
 	return rt
 }
 
+// close terminates the service. It can only be called once
+// use rt.cancel to initiate shutdown
+func (rt *runtime) close() {
+
+	// Cancel the context, will close house keeping
+	rt.cancel()
+	rt.isStopping = true
+
+	// Close the channel, will cause downstreamService to exit
+	close(rt.downstream)
+
+	//	Wait for all downstreamService have closed
+	rt.downstreamWaitGroup.Wait()
+
+	rt.logInfo("shutdown complete")
+}
+
+// ---------- Request Handling -----------
+
+// handleRequest handles the incoming http token request
+func (rt *runtime) handleRequest(w http.ResponseWriter, r *http.Request) {
+
+	// Check the request is a valid token request
+	tr, matched := rt.parseRequest(w, r)
+	if !matched {
+		// parse handles client responses
+		return
+	}
+
+	// Check to see if the token request is already in the cache
+	entry := rt.lookup(tr)
+
+	// If the entry is not valid request a token from the downstream service.
+	if entry.token == nil || entry.expiry.Before(time.Now().UTC()) {
+		//	Not found or expied, request new token
+		rt.requestFromDownstream(tr, w)
+		return
+	} else {
+		// Found here, reply without bothering downstream service
+		rt.logInfo("returning cached token for '%s' (%s) at '%s'", tr.username, tr.clientID, tr.path)
+		rt.reply(w, entry)
+	}	
+}
+
 // parseRequest checks the request is for a token and extract the details
 func (rt *runtime) parseRequest(w http.ResponseWriter, r *http.Request) (tokenRequest, bool) {
 
@@ -189,96 +233,23 @@ func (rt *runtime) parseRequest(w http.ResponseWriter, r *http.Request) (tokenRe
 	return tr, true
 }
 
-// close terminates the service. It can only be called once
-// use rt.cancel to initiate shutdown
-func (rt *runtime) close() {
-
-	// Cancel the context, will close house keeping
-	rt.cancel()
-	rt.isStopping = true
-
-	// Close the channel, will cause downstreamService to exit
-	close(rt.downstream)
-
-	//	Wait for all downstreamService have closed
-	rt.downstreamWaitGroup.Wait()
-
-	rt.logInfo("shutdown complete")
-}
-
-// criticalError captures a any errors that can terminate the service
-// Using this method avoids the need for log.Fatal type calls to exit
-// the process.  Allows Run contract to be respected.
-func (rt *runtime) criticalError(err error) {
-	rt.err = err
-	rt.cancel()
-}
-
-// logInfo logs a info message for the service
-func (rt *runtime) logInfo(format string, args ...interface{}) {
-	if rt.logger != nil {
-		rt.logger(false, format, args...)
-	}
-}
-
-// logError logs a error message for the service
-func (rt *runtime) logError(format string, args ...interface{}) {
-	if rt.logger != nil {
-		rt.logger(true, format, args...)
-	}
-}
-
-// done captures the running contexts exit channel
-func (rt *runtime) done() <-chan struct{} {
-	return rt.ctx.Done()
-}
-
-// handleRequest handles the incoming http token request
-func (rt *runtime) handleRequest(w http.ResponseWriter, r *http.Request) {
-
-	// Check the request isa a valid token request
-	tr, matched := rt.parseRequest(w, r)
-	if !matched {
-		// parse handles client responses
+// requestFromDownstream is called when a client request needs to get a new token
+func (rt *runtime) requestFromDownstream(tr tokenRequest, w http.ResponseWriter) {
+	if rt.isStopping {
+		replyServiceUnavailable(w)
 		return
 	}
 
-	// Check to see if the token request is already in the cache
-	entry := rt.lookup(tr)
+	rt.logInfo("passing on downstream request for '%s' (%s) at '%s'", tr.username, tr.clientID, tr.path)
 
-	// If thee entry is not valid request a token from the down stream service.
-	if entry.token == nil || entry.expiry.Before(time.Now().UTC()) {
-		//	Not found or expied, request new token
-		rt.requestFromDownstream(tr, w)
-		return
-	}
+	// Send the request to the downs stream queue
+	// As HTTP Handlers need to wait for competition before exiting, so
+	// we will wait on a don channel.
+	c := make(doneChan)
+	rt.downstream <- downstreamRequest{tr, w, c}
 
-	// Found here, reply without bothering downstream service
-	rt.reply(w, entry)
-}
-
-// housekeeper runs the house keeping service
-func (rt *runtime) housekeeper() {
-	// Mark closure in work group
-	defer rt.downstreamWaitGroup.Done()
-
-	for {
-
-		// Set up a context to time out after the house keeping period
-		wait, cancel := context.WithTimeout(rt.ctx, rt.houseKeeperPeriod)
-
-		// Wait for timeout or the process to exit
-		<-wait.Done()
-		cancel()
-
-		// Time to exit?
-		if rt.ctx.Err() != nil {
-			return
-		}
-
-		// Do some house keeping
-		rt.clean(time.Now().UTC())
-	}
+	// Wait
+	<-c
 }
 
 // downstreamService executes the main down stream request processing
@@ -316,25 +287,6 @@ func (rt *runtime) processDownstreamRequest(dReq downstreamRequest) {
 
 	// Process the down stream request
 	rt.getDownstreamToken(dReq.tr, dReq.w)
-}
-
-// requestFromDownstream is called when a client request needs to get a new token
-func (rt *runtime) requestFromDownstream(tr tokenRequest, w http.ResponseWriter) {
-	if rt.isStopping {
-		replyServiceUnavailable(w)
-		return
-	}
-
-	rt.logInfo("passing on downstream request for %s", tr.path)
-
-	// Send the request to the downs stream queue
-	// As HTTP Handlers need to wait for competition before exiting, so
-	// we will wait on a don channel.
-	c := make(doneChan)
-	rt.downstream <- downstreamRequest{tr, w, c}
-
-	// Wait
-	<-c
 }
 
 // getDownstreamToken handles downstream requests
@@ -410,6 +362,32 @@ func (rt *runtime) reply(w http.ResponseWriter, entry entry) {
 	w.Write(entry.token)
 }
 
+// ---------- Cache -------------
+
+// housekeeper runs the house keeping service
+func (rt *runtime) housekeeper() {
+	// Mark closure in work group
+	defer rt.downstreamWaitGroup.Done()
+
+	for {
+
+		// Set up a context to time out after the house keeping period
+		wait, cancel := context.WithTimeout(rt.ctx, rt.houseKeeperPeriod)
+
+		// Wait for timeout or the process to exit
+		<-wait.Done()
+		cancel()
+
+		// Time to exit?
+		if rt.ctx.Err() != nil {
+			return
+		}
+
+		// Do some house keeping
+		rt.clean(time.Now().UTC())
+	}
+}
+
 // lookup checks the cache for an existing user
 func (rt *runtime) lookup(tr tokenRequest) entry {
 
@@ -463,4 +441,33 @@ func (rt *runtime) clean(now time.Time) {
 			delete(rt.cache, k)
 		}
 	}
+}
+
+// ----------- Logging ----------
+
+// criticalError captures a any errors that can terminate the service
+// Using this method avoids the need for log.Fatal type calls to exit
+// the process.  Allows Run contract to be respected.
+func (rt *runtime) criticalError(err error) {
+	rt.err = err
+	rt.cancel()
+}
+
+// logInfo logs a info message for the service
+func (rt *runtime) logInfo(format string, args ...interface{}) {
+	if rt.logger != nil {
+		rt.logger(false, format, args...)
+	}
+}
+
+// logError logs a error message for the service
+func (rt *runtime) logError(format string, args ...interface{}) {
+	if rt.logger != nil {
+		rt.logger(true, format, args...)
+	}
+}
+
+// done captures the running contexts exit channel
+func (rt *runtime) done() <-chan struct{} {
+	return rt.ctx.Done()
 }
