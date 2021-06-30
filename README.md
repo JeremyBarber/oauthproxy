@@ -1,11 +1,11 @@
 # OAuthProxy
 
 ## Description
-
 Caching proxy service for oauth2 token authentication using password token flows
+Original repo located at https://github.com/nehemming/oauthproxy
+Reuploaded to gitlab.finbourne.com with permission
 
 ## Instructions
-
 For the CLI manual, please run `oauthproxy --help`
 
 ### Build
@@ -17,6 +17,9 @@ Custom locations can be provided via the command line.
 
 ### Credentials
 Request credentials are expected in the standard Finbourne `secrets.json` format.
+
+### Test
+Run tests recursively using `go test -v ./...`
 
 ### Examples
 To run an oauthproxy instance:
